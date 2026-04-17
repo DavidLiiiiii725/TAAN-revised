@@ -1,0 +1,43 @@
+# Task type definitions and reward function mappings
+# Each task type declares:
+#   - description: human-readable description
+#   - reward: name of the reward class to use
+#   - reward_config: kwargs forwarded to the reward class constructor
+#   - signal_type: "rule" (deterministic 0/1) or "model" (continuous score)
+
+task_types:
+  math:
+    description: "Mathematical reasoning problems (GSM8K, MATH, etc.)"
+    reward: "math_reward"
+    reward_config: {}
+    signal_type: "rule"
+
+  code:
+    description: "Code generation problems evaluated by unit tests"
+    reward: "code_reward"
+    reward_config:
+      timeout: 10          # seconds per test case
+      sandbox: "subprocess"
+    signal_type: "rule"
+
+  writing:
+    description: "Open-ended writing tasks scored by a reward model"
+    reward: "model_reward"
+    reward_config:
+      model_name: "Qwen/Qwen2.5-7B-Instruct"
+      batch_size: 32
+    signal_type: "model"
+
+  chat:
+    description: "Conversational tasks scored by a reward model"
+    reward: "model_reward"
+    reward_config:
+      model_name: "Qwen/Qwen2.5-7B-Instruct"
+      batch_size: 32
+    signal_type: "model"
+
+  safety:
+    description: "Safety-critical prompts — binary rule reward"
+    reward: "math_reward"   # reuses binary comparison logic
+    reward_config: {}
+    signal_type: "rule"
