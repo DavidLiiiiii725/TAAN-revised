@@ -8,7 +8,7 @@ Each sample is a :class:`TaskSample` that carries:
 - ``reward_fn_name``: which reward function to apply
 
 Data sources (HuggingFace datasets):
-    math    → openai/gsm8k, hendrycks/math
+    math    → openai/gsm8k, hendrycks/competition_math
     code    → openai/humaneval
     writing → tatsu-lab/alpaca_eval
     chat    → lmsys/chatbot_arena_conversations
@@ -17,8 +17,9 @@ Data sources (HuggingFace datasets):
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 from torch.utils.data import Dataset
@@ -83,6 +84,8 @@ class MultitaskDataset(Dataset):
     def from_config(
         cls,
         task_types_config: Dict[str, Any],
+        split: str = "train",
+        validation_ratio: float = 0.1,
         max_samples_per_type: Optional[int] = None,
         seed: int = 42,
     ) -> "MultitaskDataset":
@@ -90,6 +93,9 @@ class MultitaskDataset(Dataset):
 
         Args:
             task_types_config: Dict mapping ``type_id → {datasets: [...], reward: ...}``.
+            split: Requested split, one of ``train`` or ``validation``.
+            validation_ratio: Fallback validation ratio when no dedicated split
+                exists for a dataset.
             max_samples_per_type: Cap on samples loaded per type (for quick testing).
             seed: Random seed for shuffling.
 
@@ -104,16 +110,23 @@ class MultitaskDataset(Dataset):
                 "Install it with: pip install datasets"
             ) from exc
 
+        if split not in {"train", "validation"}:
+            raise ValueError(f"Unsupported split: {split}. Use 'train' or 'validation'.")
+
         all_samples: List[TaskSample] = []
 
         for type_id, cfg in task_types_config.items():
             reward_fn_name = cfg.get("reward", "")
-            dataset_names: List[str] = cfg.get("datasets", [])
+            dataset_entries: List[Any] = cfg.get("datasets", [])
 
-            for ds_name in dataset_names:
+            for ds_entry in dataset_entries:
+                ds_name, source_split = cls._resolve_dataset_entry(ds_entry, split)
                 try:
                     samples = cls._load_hf_dataset(
                         ds_name,
+                        source_split=source_split,
+                        requested_split=split,
+                        validation_ratio=validation_ratio,
                         type_id=type_id,
                         reward_fn_name=reward_fn_name,
                         max_samples=max_samples_per_type,
@@ -121,12 +134,16 @@ class MultitaskDataset(Dataset):
                     )
                     all_samples.extend(samples)
                     logger.info(
-                        "Loaded %d samples from %s (type=%s)",
-                        len(samples), ds_name, type_id,
+                        "Loaded %d samples from %s:%s (requested=%s, type=%s)",
+                        len(samples), ds_name, source_split, split, type_id,
                     )
                 except Exception as exc:
                     logger.warning(
-                        "Failed to load dataset '%s': %s", ds_name, exc
+                        "Failed to load dataset '%s:%s' for split '%s': %s",
+                        ds_name,
+                        source_split,
+                        split,
+                        exc,
                     )
 
         if not all_samples:
@@ -135,8 +152,38 @@ class MultitaskDataset(Dataset):
         return cls(all_samples)
 
     @staticmethod
+    def _resolve_dataset_entry(ds_entry: Any, split: str) -> Tuple[str, str]:
+        """Return dataset name and source split from config entry."""
+        if isinstance(ds_entry, str):
+            # Backward compatible default: use train split and fallback slicing.
+            source_split = "train" if split in {"train", "validation"} else split
+            return ds_entry, source_split
+
+        if isinstance(ds_entry, dict):
+            ds_name = ds_entry.get("name")
+            if not ds_name:
+                raise ValueError("Dataset entry dict must include a 'name' field.")
+            split_key = "train_split" if split == "train" else "validation_split"
+            source_split = ds_entry.get(split_key)
+            if source_split is None:
+                source_split = ds_entry.get("split")
+            if source_split is None:
+                source_split = "train"
+                logger.warning(
+                    "Dataset '%s' missing %s/split. Falling back to split='train'.",
+                    ds_name,
+                    split_key,
+                )
+            return ds_name, source_split
+
+        raise TypeError("Dataset entry must be either a string or a mapping.")
+
+    @staticmethod
     def _load_hf_dataset(
         ds_name: str,
+        source_split: str,
+        requested_split: str,
+        validation_ratio: float,
         type_id: str,
         reward_fn_name: str,
         max_samples: Optional[int] = None,
@@ -147,7 +194,7 @@ class MultitaskDataset(Dataset):
 
         # Dataset-specific loading logic
         if ds_name == "openai/gsm8k":
-            ds = load_dataset(ds_name, "main", split="train")
+            ds = load_dataset(ds_name, "main", split=source_split)
             samples = [
                 TaskSample(
                     prompt=row["question"],
@@ -158,8 +205,38 @@ class MultitaskDataset(Dataset):
                 for row in ds
             ]
 
+        elif ds_name == "hendrycks/competition_math":
+            ds = load_dataset(ds_name, split=source_split)
+            samples = [
+                TaskSample(
+                    prompt=row["problem"],
+                    type_id=type_id,
+                    ground_truth=row.get("solution", ""),
+                    reward_fn_name=reward_fn_name,
+                )
+                for row in ds
+            ]
+
+        elif ds_name == "google-research-datasets/mbpp":
+            ds = load_dataset(ds_name, split=source_split)
+            samples = []
+            for row in ds:
+                prompt = row.get("text", "")
+                tests = row.get("test_list", [])
+                test_blob = "\n".join(tests) if isinstance(tests, list) else str(tests)
+                if not prompt:
+                    continue
+                samples.append(
+                    TaskSample(
+                        prompt=prompt,
+                        type_id=type_id,
+                        ground_truth=test_blob,
+                        reward_fn_name=reward_fn_name,
+                    )
+                )
+
         elif ds_name == "openai/humaneval":
-            ds = load_dataset(ds_name, split="test")
+            ds = load_dataset(ds_name, split=source_split)
             samples = [
                 TaskSample(
                     prompt=row["prompt"],
@@ -171,7 +248,7 @@ class MultitaskDataset(Dataset):
             ]
 
         elif ds_name == "tatsu-lab/alpaca_eval":
-            ds = load_dataset(ds_name, split="eval")
+            ds = load_dataset(ds_name, split=source_split)
             samples = [
                 TaskSample(
                     prompt=row["instruction"],
@@ -183,7 +260,7 @@ class MultitaskDataset(Dataset):
             ]
 
         elif ds_name == "lmsys/chatbot_arena_conversations":
-            ds = load_dataset(ds_name, split="train")
+            ds = load_dataset(ds_name, split=source_split)
             samples = []
             for row in ds:
                 convo = row.get("conversation_a", [])
@@ -199,7 +276,7 @@ class MultitaskDataset(Dataset):
 
         else:
             # Generic fallback: assume columns "prompt"/"question" and optional "answer"
-            ds = load_dataset(ds_name, split="train")
+            ds = load_dataset(ds_name, split=source_split)
             prompt_col = "prompt" if "prompt" in ds.column_names else "question"
             gt_col = "answer" if "answer" in ds.column_names else None
             samples = [
@@ -212,8 +289,28 @@ class MultitaskDataset(Dataset):
                 for row in ds
             ]
 
+        # If caller requested validation but config only supplied train split,
+        # create deterministic split from the same source split.
+        if requested_split == "validation" and source_split == "train":
+            val_count = int(len(samples) * validation_ratio)
+            if val_count > 0:
+                rng = random.Random(seed)
+                indices = list(range(len(samples)))
+                rng.shuffle(indices)
+                selected = set(indices[:val_count])
+                samples = [s for i, s in enumerate(samples) if i in selected]
+            else:
+                samples = []
+        elif requested_split == "train" and source_split == "train":
+            val_count = int(len(samples) * validation_ratio)
+            if val_count > 0:
+                rng = random.Random(seed)
+                indices = list(range(len(samples)))
+                rng.shuffle(indices)
+                held_out = set(indices[:val_count])
+                samples = [s for i, s in enumerate(samples) if i not in held_out]
+
         if max_samples is not None and len(samples) > max_samples:
-            import random
             rng = random.Random(seed)
             samples = rng.sample(samples, max_samples)
 

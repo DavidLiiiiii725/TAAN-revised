@@ -39,6 +39,9 @@ $$\hat{\sigma}_\tau^{(t)} = \frac{\sqrt{\alpha \hat{v}_\tau^{(t-1)} + (1-\alpha)
 ```bash
 pip install -e ".[train]"
 
+# Prepare train/validation splits from real HF datasets
+python scripts/prepare_data.py --config configs/qwen3_4b_multitask.yaml --validation_split_ratio 0.1
+
 # Single GPU
 python scripts/train.py --config configs/qwen3_4b_multitask.yaml
 
