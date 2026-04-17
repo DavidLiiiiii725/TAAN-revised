@@ -35,25 +35,36 @@ tp_size: 1
 dp_size: 1
 
 # ── Data / Task types ──────────────────────────────────────────────────────────
+validation_split_ratio: 0.1
+
 task_types:
   math:
     datasets:
-      - "openai/gsm8k"
+      - name: "openai/gsm8k"
+        train_split: "train"
+        validation_split: "test"
+      - name: "hendrycks/competition_math"
+        train_split: "train"
+        validation_split: "test"
     reward: "math_reward"
     weight: 0.3
   code:
     datasets:
-      - "openai/humaneval"
+      - name: "google-research-datasets/mbpp"
+        train_split: "train"
+        validation_split: "validation"
     reward: "code_reward"
     weight: 0.3
   writing:
     datasets:
-      - "tatsu-lab/alpaca_eval"
+      - name: "tatsu-lab/alpaca_eval"
+        split: "eval"
     reward: "model_reward"
     weight: 0.2
   chat:
     datasets:
-      - "lmsys/chatbot_arena_conversations"
+      - name: "lmsys/chatbot_arena_conversations"
+        split: "train"
     reward: "model_reward"
     weight: 0.2
 

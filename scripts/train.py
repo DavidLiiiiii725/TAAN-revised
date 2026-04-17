@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import random
 import sys
+from collections import defaultdict
 
 import yaml
 
@@ -24,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.data.multitask_dataset import MultitaskDataset
 from src.data.task_sampler import TypeAwareBatchSampler
 from src.grpo.trainer import GRPOTAANTrainer, TrainingConfig
+from src.rewards import CodeReward, MathReward, ModelReward
 from src.utils.logging import MetricsLogger, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -71,6 +74,73 @@ def load_config(args: argparse.Namespace) -> dict:
     return cfg
 
 
+def build_reward_registry(task_types_cfg: dict) -> dict:
+    registry = {}
+
+    reward_factories = {
+        "math_reward": MathReward,
+        "code_reward": CodeReward,
+        "model_reward": ModelReward,
+    }
+
+    for type_id, type_cfg in task_types_cfg.items():
+        reward_name = type_cfg.get("reward", "")
+        reward_cfg = type_cfg.get("reward_config", {})
+        factory = reward_factories.get(reward_name)
+        if factory is None:
+            logger.warning("Unknown reward '%s' for type '%s'", reward_name, type_id)
+            continue
+        reward_fn = factory(**reward_cfg)
+        # Keep both lookups because both GRPOTAANTrainer.train_step and
+        # evaluate_on_validation first check reward function name and then
+        # fall back to task type id.
+        registry[type_id] = reward_fn
+        registry[reward_name] = reward_fn
+
+    return registry
+
+
+def evaluate_on_validation(
+    trainer: GRPOTAANTrainer,
+    val_dataset: MultitaskDataset,
+    max_samples: int = 128,
+) -> dict:
+    if len(val_dataset) == 0:
+        return {}
+
+    sample_count = min(max_samples, len(val_dataset.samples))
+    rng = random.Random(trainer.config.seed + trainer.global_step)
+    indices = rng.sample(range(len(val_dataset.samples)), sample_count)
+    samples = [val_dataset.samples[i] for i in indices]
+    prompts = [s.prompt for s in samples]
+    rollout = trainer.rollout_manager.generate(
+        prompts,
+        G=1,
+        temperature=0.0,
+        top_p=1.0,
+        max_tokens=trainer.config.max_gen_tokens,
+    )
+
+    per_type_scores = defaultdict(list)
+    for sample, response_list in zip(samples, rollout.responses):
+        if not response_list:
+            continue
+        reward_fn = trainer.reward_registry.get(sample.reward_fn_name) or trainer.reward_registry.get(sample.type_id)
+        if reward_fn is None:
+            continue
+        score = float(reward_fn(response_list[0], sample.ground_truth))
+        per_type_scores[sample.type_id].append(score)
+
+    if not per_type_scores:
+        return {}
+
+    per_type_mean = {k: sum(v) / len(v) for k, v in per_type_scores.items()}
+    total_scores = sum(sum(v) for v in per_type_scores.values())
+    total_count = sum(len(v) for v in per_type_scores.values())
+    overall = total_scores / total_count
+    return {"validation_mean_reward": overall, "validation_per_type": per_type_mean}
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -91,13 +161,27 @@ def main() -> None:
 
     # ── Dataset ─────────────────────────────────────────────────────────────
     task_types_cfg = cfg_dict.get("task_types", {})
+    validation_ratio = float(cfg_dict.get("validation_split_ratio", 0.1))
     logger.info("Loading datasets…")
-    dataset = MultitaskDataset.from_config(task_types_cfg, seed=config.seed)
-    logger.info("Dataset loaded: %d total samples", len(dataset))
-    logger.info("Type distribution: %s", dataset.type_counts())
+    train_dataset = MultitaskDataset.from_config(
+        task_types_cfg,
+        split="train",
+        validation_ratio=validation_ratio,
+        seed=config.seed,
+    )
+    val_dataset = MultitaskDataset.from_config(
+        task_types_cfg,
+        split="validation",
+        validation_ratio=validation_ratio,
+        seed=config.seed,
+    )
+    logger.info("Train dataset loaded: %d total samples", len(train_dataset))
+    logger.info("Train type distribution: %s", train_dataset.type_counts())
+    logger.info("Validation dataset loaded: %d total samples", len(val_dataset))
+    logger.info("Validation type distribution: %s", val_dataset.type_counts())
 
     sampler = TypeAwareBatchSampler(
-        dataset,
+        train_dataset,
         batch_size=config.batch_size,
         min_per_type=10,
         seed=config.seed,
@@ -105,7 +189,8 @@ def main() -> None:
 
     # ── Trainer ─────────────────────────────────────────────────────────────
     logger.info("Initialising trainer…")
-    trainer = GRPOTAANTrainer(config)
+    reward_registry = build_reward_registry(task_types_cfg)
+    trainer = GRPOTAANTrainer(config, reward_registry=reward_registry)
 
     metrics_logger = MetricsLogger(log_every=config.log_every)
 
@@ -118,7 +203,7 @@ def main() -> None:
             break
 
         # Collate batch from dataset
-        batch_samples = [dataset[i] for i in batch_indices]
+        batch_samples = [train_dataset[i] for i in batch_indices]
         batch = {
             "prompts": [s.prompt for s in batch_samples],
             "type_ids": [s.type_id for s in batch_samples],
@@ -131,7 +216,7 @@ def main() -> None:
 
         # Periodic evaluation
         if step % config.eval_every == 0 and step > 0:
-            eval_results = trainer.evaluate()
+            eval_results = evaluate_on_validation(trainer, val_dataset)
             if eval_results:
                 logger.info("Eval at step %d: %s", step, eval_results)
 
