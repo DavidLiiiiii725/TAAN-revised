@@ -1,0 +1,69 @@
+# Qwen3-4B multi-task configuration — inherits base_config.yaml defaults.
+
+# ── Model ──────────────────────────────────────────────────────────────────────
+model_name: "Qwen/Qwen3-4B"
+dtype: "bfloat16"
+
+# ── Sampling ───────────────────────────────────────────────────────────────────
+G: 8
+temperature: 1.0
+top_p: 0.95
+max_gen_tokens: 2048
+
+# ── Training ───────────────────────────────────────────────────────────────────
+batch_size: 128
+lr: 1.0e-6
+weight_decay: 0.01
+max_steps: 5000
+warmup_steps: 100
+gradient_accumulation_steps: 4
+max_grad_norm: 1.0
+seed: 42
+
+# ── GRPO ───────────────────────────────────────────────────────────────────────
+clip_eps: 0.2
+beta: 0.01
+
+# ── TAAN ───────────────────────────────────────────────────────────────────────
+taan_alpha: 0.99
+taan_clip: 5.0
+taan_min_samples: 20
+taan_eps: 1.0e-8
+
+# ── Distributed ────────────────────────────────────────────────────────────────
+tp_size: 1
+dp_size: 1
+
+# ── Data / Task types ──────────────────────────────────────────────────────────
+task_types:
+  math:
+    datasets:
+      - "openai/gsm8k"
+    reward: "math_reward"
+    weight: 0.3
+  code:
+    datasets:
+      - "openai/humaneval"
+    reward: "code_reward"
+    weight: 0.3
+  writing:
+    datasets:
+      - "tatsu-lab/alpaca_eval"
+    reward: "model_reward"
+    weight: 0.2
+  chat:
+    datasets:
+      - "lmsys/chatbot_arena_conversations"
+    reward: "model_reward"
+    weight: 0.2
+
+# ── Checkpointing ──────────────────────────────────────────────────────────────
+output_dir: "outputs/qwen3-4b-multitask"
+log_every: 10
+save_every: 500
+eval_every: 200
+resume_from: null
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+wandb_project: "taan-grpo"
+wandb_run_name: "qwen3-4b-multitask"
