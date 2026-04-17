@@ -111,7 +111,7 @@ class MultitaskDataset(Dataset):
             ) from exc
 
         if split not in {"train", "validation"}:
-            raise ValueError(f"Unsupported split: {split}. Use 'train' or 'validation'.")
+            raise ValueError(f"Unsupported split '{split}'. Use 'train' or 'validation'.")
 
         all_samples: List[TaskSample] = []
 
@@ -292,29 +292,51 @@ class MultitaskDataset(Dataset):
         # If caller requested validation but config only supplied train split,
         # create deterministic split from the same source split.
         if requested_split == "validation" and source_split == "train":
-            val_count = int(len(samples) * validation_ratio)
-            if val_count > 0:
-                rng = random.Random(seed)
-                indices = list(range(len(samples)))
-                rng.shuffle(indices)
-                selected = set(indices[:val_count])
-                samples = [s for i, s in enumerate(samples) if i in selected]
-            else:
-                samples = []
+            samples = MultitaskDataset._select_holdout_samples(
+                samples=samples,
+                validation_ratio=validation_ratio,
+                seed=seed,
+                keep_validation=True,
+            )
         elif requested_split == "train" and source_split == "train":
-            val_count = int(len(samples) * validation_ratio)
-            if val_count > 0:
-                rng = random.Random(seed)
-                indices = list(range(len(samples)))
-                rng.shuffle(indices)
-                held_out = set(indices[:val_count])
-                samples = [s for i, s in enumerate(samples) if i not in held_out]
+            samples = MultitaskDataset._select_holdout_samples(
+                samples=samples,
+                validation_ratio=validation_ratio,
+                seed=seed,
+                keep_validation=False,
+            )
 
         if max_samples is not None and len(samples) > max_samples:
             rng = random.Random(seed)
             samples = rng.sample(samples, max_samples)
 
         return samples
+
+    @staticmethod
+    def _select_holdout_samples(
+        samples: List[TaskSample],
+        validation_ratio: float,
+        seed: int,
+        keep_validation: bool,
+    ) -> List[TaskSample]:
+        """Deterministically split train source into train/validation subsets."""
+        val_count = int(len(samples) * validation_ratio)
+        if val_count <= 0:
+            if keep_validation and samples:
+                logger.warning(
+                    "Validation split is empty (validation_ratio=%s, n_samples=%d).",
+                    validation_ratio,
+                    len(samples),
+                )
+            return [] if keep_validation else samples
+
+        rng = random.Random(seed)
+        indices = list(range(len(samples)))
+        rng.shuffle(indices)
+        held_out = set(indices[:val_count])
+        if keep_validation:
+            return [s for i, s in enumerate(samples) if i in held_out]
+        return [s for i, s in enumerate(samples) if i not in held_out]
 
     # ------------------------------------------------------------------
     # Helpers

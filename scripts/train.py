@@ -90,6 +90,9 @@ def build_reward_registry(task_types_cfg: dict) -> dict:
             logger.warning("Unknown reward '%s' for type '%s'", reward_name, type_id)
             continue
         reward_fn = factory(**reward_cfg)
+        # Keep both lookups because both GRPOTAANTrainer.train_step and
+        # evaluate_on_validation first check reward function name and then
+        # fall back to task type id.
         registry[type_id] = reward_fn
         registry[reward_name] = reward_fn
 
@@ -116,6 +119,8 @@ def evaluate_on_validation(
 
     per_type_scores = defaultdict(list)
     for sample, response_list in zip(samples, rollout.responses):
+        if not response_list:
+            continue
         reward_fn = trainer.reward_registry.get(sample.reward_fn_name) or trainer.reward_registry.get(sample.type_id)
         if reward_fn is None:
             continue
@@ -126,7 +131,9 @@ def evaluate_on_validation(
         return {}
 
     per_type_mean = {k: sum(v) / len(v) for k, v in per_type_scores.items() if v}
-    overall = sum(sum(v) for v in per_type_scores.values()) / sum(len(v) for v in per_type_scores.values())
+    total_scores = sum(sum(v) for v in per_type_scores.values())
+    total_count = sum(len(v) for v in per_type_scores.values())
+    overall = total_scores / total_count
     return {"validation_mean_reward": overall, "validation_per_type": per_type_mean}
 
 
