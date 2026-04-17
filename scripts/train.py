@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import random
 import sys
 from collections import defaultdict
 
@@ -107,7 +108,10 @@ def evaluate_on_validation(
     if len(val_dataset) == 0:
         return {}
 
-    samples = val_dataset.samples[:max_samples]
+    sample_count = min(max_samples, len(val_dataset.samples))
+    rng = random.Random(trainer.config.seed + trainer.global_step)
+    indices = rng.sample(range(len(val_dataset.samples)), sample_count)
+    samples = [val_dataset.samples[i] for i in indices]
     prompts = [s.prompt for s in samples]
     rollout = trainer.rollout_manager.generate(
         prompts,
@@ -130,7 +134,7 @@ def evaluate_on_validation(
     if not per_type_scores:
         return {}
 
-    per_type_mean = {k: sum(v) / len(v) for k, v in per_type_scores.items() if v}
+    per_type_mean = {k: sum(v) / len(v) for k, v in per_type_scores.items()}
     total_scores = sum(sum(v) for v in per_type_scores.values())
     total_count = sum(len(v) for v in per_type_scores.values())
     overall = total_scores / total_count

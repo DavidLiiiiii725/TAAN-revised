@@ -120,12 +120,13 @@ class MultitaskDataset(Dataset):
             dataset_entries: List[Any] = cfg.get("datasets", [])
 
             for ds_entry in dataset_entries:
-                ds_name, source_split = cls._resolve_dataset_entry(ds_entry, split)
+                ds_name, source_split, use_holdout_split = cls._resolve_dataset_entry(ds_entry, split)
                 try:
                     samples = cls._load_hf_dataset(
                         ds_name,
                         source_split=source_split,
                         requested_split=split,
+                        use_holdout_split=use_holdout_split,
                         validation_ratio=validation_ratio,
                         type_id=type_id,
                         reward_fn_name=reward_fn_name,
@@ -152,12 +153,12 @@ class MultitaskDataset(Dataset):
         return cls(all_samples)
 
     @staticmethod
-    def _resolve_dataset_entry(ds_entry: Any, split: str) -> Tuple[str, str]:
-        """Return dataset name and source split from config entry."""
+    def _resolve_dataset_entry(ds_entry: Any, split: str) -> Tuple[str, str, bool]:
+        """Return dataset name, source split, and whether holdout split is needed."""
         if isinstance(ds_entry, str):
             # Backward compatible default: use train split and fallback slicing.
-            source_split = "train" if split in {"train", "validation"} else split
-            return ds_entry, source_split
+            source_split = "train"
+            return ds_entry, source_split, True
 
         if isinstance(ds_entry, dict):
             ds_name = ds_entry.get("name")
@@ -165,16 +166,20 @@ class MultitaskDataset(Dataset):
                 raise ValueError("Dataset entry dict must include a 'name' field.")
             split_key = "train_split" if split == "train" else "validation_split"
             source_split = ds_entry.get(split_key)
+            use_holdout_split = False
             if source_split is None:
                 source_split = ds_entry.get("split")
+                if source_split is not None:
+                    use_holdout_split = True
             if source_split is None:
                 source_split = "train"
+                use_holdout_split = True
                 logger.warning(
                     "Dataset '%s' missing %s/split. Falling back to split='train'.",
                     ds_name,
                     split_key,
                 )
-            return ds_name, source_split
+            return ds_name, source_split, use_holdout_split
 
         raise TypeError("Dataset entry must be either a string or a mapping.")
 
@@ -183,6 +188,7 @@ class MultitaskDataset(Dataset):
         ds_name: str,
         source_split: str,
         requested_split: str,
+        use_holdout_split: bool,
         validation_ratio: float,
         type_id: str,
         reward_fn_name: str,
@@ -291,14 +297,14 @@ class MultitaskDataset(Dataset):
 
         # If caller requested validation but config only supplied train split,
         # create deterministic split from the same source split.
-        if requested_split == "validation" and source_split == "train":
+        if requested_split == "validation" and use_holdout_split:
             samples = MultitaskDataset._select_holdout_samples(
                 samples=samples,
                 validation_ratio=validation_ratio,
                 seed=seed,
                 keep_validation=True,
             )
-        elif requested_split == "train" and source_split == "train":
+        elif requested_split == "train" and use_holdout_split:
             samples = MultitaskDataset._select_holdout_samples(
                 samples=samples,
                 validation_ratio=validation_ratio,
@@ -321,13 +327,9 @@ class MultitaskDataset(Dataset):
     ) -> List[TaskSample]:
         """Deterministically split train source into train/validation subsets."""
         val_count = int(len(samples) * validation_ratio)
-        if val_count <= 0:
-            if keep_validation and samples:
-                logger.warning(
-                    "Validation split is empty (validation_ratio=%s, n_samples=%d).",
-                    validation_ratio,
-                    len(samples),
-                )
+        if keep_validation and samples and val_count <= 0:
+            val_count = 1
+        if val_count <= 0 and not keep_validation:
             return [] if keep_validation else samples
 
         rng = random.Random(seed)

@@ -58,15 +58,13 @@ task_types:
   writing:
     datasets:
       - name: "tatsu-lab/alpaca_eval"
-        train_split: "eval"
-        validation_split: "eval"
+        split: "eval"
     reward: "model_reward"
     weight: 0.2
   chat:
     datasets:
       - name: "lmsys/chatbot_arena_conversations"
-        train_split: "train"
-        validation_split: "train"
+        split: "train"
     reward: "model_reward"
     weight: 0.2
 
