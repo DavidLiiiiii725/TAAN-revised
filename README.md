@@ -56,6 +56,84 @@ python scripts/train.py --config configs/qwen3_4b_multitask.yaml
 torchrun --nproc_per_node=4 scripts/train.py --config configs/qwen3_4b_multitask.yaml
 ```
 
+### Evaluate
+
+```bash
+pip install -e ".[train]"
+
+# Math accuracy on GSM8K (greedy, full test set)
+python scripts/eval.py \
+    --checkpoint outputs/qwen3-4b-multitask/step-1000 \
+    --config configs/qwen3_4b_multitask.yaml \
+    --task math
+
+# HumanEval pass@1 (greedy, all 164 tasks)
+python scripts/eval.py \
+    --checkpoint outputs/qwen3-4b-multitask/step-1000 \
+    --config configs/qwen3_4b_multitask.yaml \
+    --task code --pass_k 1
+
+# HumanEval pass@10 on a 50-task subset (temperature sampling, reproducible)
+python scripts/eval.py \
+    --checkpoint outputs/qwen3-4b-multitask/step-1000 \
+    --config configs/qwen3_4b_multitask.yaml \
+    --task code --pass_k 10 --num_samples 50 --seed 42
+
+# Save results to JSON
+python scripts/eval.py \
+    --checkpoint outputs/qwen3-4b-multitask/step-1000 \
+    --config configs/qwen3_4b_multitask.yaml \
+    --task code --pass_k 1 --output_file results/grpo_humaneval.json
+```
+
+#### HumanEval evaluation protocol
+
+The code evaluation follows the **official HumanEval execution-based protocol**:
+
+| Field used | Meaning |
+|---|---|
+| `prompt` | Function signature + docstring fed to the model |
+| `test` | Unit-test assertions (used as ground truth) |
+| `canonical_solution` | **Not used** for evaluation |
+
+The candidate code is constructed as `prompt + model_response` (the model generates a continuation of the function signature). Correctness is determined by executing `candidate_code + test_assertions` in a sandboxed subprocess.
+
+#### Comparing GRPO vs TAAN reproducibly
+
+To ensure both runs evaluate on the **same task subset**, use the same `--seed` and `--num_samples`:
+
+```bash
+# GRPO checkpoint
+python scripts/eval.py \
+    --checkpoint outputs/grpo/step-1000 \
+    --task code --pass_k 1 --num_samples 50 --seed 42 \
+    --output_file results/grpo_p1.json
+
+# TAAN checkpoint (identical task subset)
+python scripts/eval.py \
+    --checkpoint outputs/taan/step-1000 \
+    --task code --pass_k 1 --num_samples 50 --seed 42 \
+    --output_file results/taan_p1.json
+```
+
+Both output JSON files include transparent counts:
+```json
+{
+  "task": "code",
+  "metric": "pass@1",
+  "pass_at_k": 0.72,
+  "passed": 36,
+  "n_attempted": 50,
+  "n_invalid": 0,
+  "n_evaluated": 50,
+  "n_skipped_by_subset": 114,
+  "n_loaded": 164,
+  "pass_k": 1,
+  "seed": 42,
+  "per_task": [...]
+}
+```
+
 ---
 
 ## Repository Structure
