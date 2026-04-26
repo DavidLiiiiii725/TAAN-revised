@@ -238,19 +238,38 @@ def evaluate_humaneval(
 
     n_loaded = len(all_rows)
     rows = _sample_rows(all_rows, num_samples, seed)
-    n_eval = len(rows)
-    n_skipped_subset = n_loaded - n_eval
+    n_sampled = len(rows)
+    n_skipped_subset = n_loaded - n_sampled
 
     logger.info(
-        "HumanEval: loaded=%d, evaluating=%d, skipped_by_subset=%d, "
+        "HumanEval: loaded=%d, sampled=%d, skipped_by_subset=%d, "
         "pass_k=%d, seed=%d",
-        n_loaded, n_eval, n_skipped_subset, pass_k, seed,
+        n_loaded, n_sampled, n_skipped_subset, pass_k, seed,
     )
 
-    prompts = [row["prompt"] for row in rows]
-    # Use the 'test' field (unit test assertions), NOT 'canonical_solution'.
-    test_cases = [row["test"] for row in rows]
-    task_ids = [row["task_id"] for row in rows]
+    prompts = []
+    test_cases = []
+    task_ids = []
+    skipped_missing_fields = 0
+    for row in rows:
+        task_id = row.get("task_id", "<unknown>")
+        if "prompt" not in row or "test" not in row:
+            logger.warning(
+                "HumanEval row '%s' is missing 'prompt' or 'test' field; skipping.",
+                task_id,
+            )
+            skipped_missing_fields += 1
+            continue
+        prompts.append(row["prompt"])
+        # Use the 'test' field (unit test assertions), NOT 'canonical_solution'.
+        test_cases.append(row["test"])
+        task_ids.append(task_id)
+
+    n_eval = len(prompts)
+    if skipped_missing_fields:
+        logger.warning(
+            "HumanEval: skipped %d row(s) with missing fields.", skipped_missing_fields
+        )
 
     temperature = 0.0 if pass_k == 1 else 0.8
     top_p = 1.0 if pass_k == 1 else 0.95
@@ -273,9 +292,11 @@ def evaluate_humaneval(
 
         task_passed = False
         for response in resp_list[:pass_k]:
-            # Combine prompt + response to form a complete function definition.
-            # The HumanEval prompt already contains the signature/docstring;
-            # the model generates the body as a continuation.
+            # HumanEval prompts already end with a newline after the docstring,
+            # so simple concatenation yields a syntactically valid function.
+            # Example: prompt = "def add(a, b):\n    \"\"\"...\"\"\"\n"
+            #          response = "    return a + b\n"  (model continuation)
+            # candidate  = "def add(a, b):\n    \"\"\"...\"\"\"\n    return a + b\n"
             candidate_code = prompt + response
             score = reward_fn._run_tests(candidate_code, test_code)
             if score >= 1.0:
