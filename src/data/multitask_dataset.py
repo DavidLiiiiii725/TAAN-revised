@@ -138,14 +138,42 @@ class MultitaskDataset(Dataset):
                         "Loaded %d samples from %s:%s (requested=%s, type=%s)",
                         len(samples), ds_name, source_split, split, type_id,
                     )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to load dataset '%s:%s' for split '%s': %s",
-                        ds_name,
-                        source_split,
-                        split,
-                        exc,
+                except Exception as exc:  # noqa: BLE001
+                    from src.data.dataset_availability import (
+                        classify_exception,
+                        DatasetStatus,
                     )
+                    status, detail = classify_exception(exc)
+                    if status == DatasetStatus.AUTH_REQUIRED:
+                        logger.warning(
+                            "Dataset '%s:%s' (split '%s') requires authentication "
+                            "(HTTP 401/403 or gated repo). "
+                            "Run `huggingface-cli login` or set the HF_TOKEN "
+                            "environment variable, then re-run prepare_data.py. "
+                            "Detail: %s",
+                            ds_name,
+                            source_split,
+                            split,
+                            detail,
+                        )
+                    elif status == DatasetStatus.NOT_FOUND:
+                        logger.warning(
+                            "Dataset '%s:%s' (split '%s') was not found on Hugging "
+                            "Face Hub (404). Verify the dataset ID at "
+                            "https://huggingface.co/datasets. Detail: %s",
+                            ds_name,
+                            source_split,
+                            split,
+                            detail,
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to load dataset '%s:%s' for split '%s': %s",
+                            ds_name,
+                            source_split,
+                            split,
+                            exc,
+                        )
 
         if not all_samples:
             logger.warning("No samples loaded — dataset is empty.")

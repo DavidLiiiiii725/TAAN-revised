@@ -36,12 +36,61 @@ $$\hat{\sigma}_\tau^{(t)} = \frac{\sqrt{\alpha \hat{v}_\tau^{(t-1)} + (1-\alpha)
 
 ## Quick Start
 
+### Authenticate with Hugging Face (required for some datasets)
+
+Several datasets used in this project (AIME, MMLU, etc.) may require a
+Hugging Face account or acceptance of dataset terms.  Authenticate before
+running data preparation:
+
+```bash
+# Option A – interactive login (stores token in ~/.huggingface/token)
+huggingface-cli login
+
+# Option B – environment variable (useful in CI / Docker)
+export HF_TOKEN=<your_token>
+```
+
+If you see a `401 Unauthorized` error, the dataset is either gated or private.
+Accept the dataset terms on the dataset page first:
+<https://huggingface.co/datasets>
+
 ### Download datasets
 
-Run this command to download and prepare the real training/validation datasets:
+Run this command to download and prepare the real training/validation datasets.
+Before downloading, the script automatically checks availability of AIME,
+GSM8K, HumanEval, and MMLU and prints a status report:
+
+```
+=================================================================
+  DATASET AVAILABILITY REPORT
+=================================================================
+  [✓  AVAILABLE ]  AIME          Maxwell-Jia/AIME_1983_2024  split=train
+  [✓  AVAILABLE ]  GSM8K         openai/gsm8k  split=train  config=main
+  [✗  AUTH-REQ  ]  HUMANEVAL     openai/humaneval  split=test
+              → Authentication required.  Authenticate via one of:
+                  huggingface-cli login
+                  export HF_TOKEN=<your_token>
+  [✓  AVAILABLE ]  MMLU          cais/mmlu  split=test  config=all
+=================================================================
+  Summary: 3 available, 1 auth-required, 0 not-found, 0 other-error
+=================================================================
+```
+
+| Status        | Meaning                                                  |
+|---------------|----------------------------------------------------------|
+| `available`   | Dataset is accessible; download will proceed.            |
+| `auth-required` | 401/403 or gated repo — run `huggingface-cli login`.   |
+| `not-found`   | Dataset ID is wrong or does not exist on the Hub.        |
+| `other-error` | Network or unexpected error — see the detail line.       |
 
 ```bash
 python scripts/prepare_data.py --config configs/qwen3_4b_multitask.yaml --validation_split_ratio 0.1
+```
+
+To skip the availability check (e.g. in offline mode):
+
+```bash
+python scripts/prepare_data.py --config configs/qwen3_4b_multitask.yaml --skip_availability_check
 ```
 
 ### Train
